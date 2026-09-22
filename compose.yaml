@@ -1,0 +1,24 @@
+services:
+  app:
+    build: .
+    image: text-to-sql:local
+    init: true
+    stdin_open: true
+    tty: true
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    environment:
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      GROQ_MODEL: "${GROQ_MODEL:-llama-3.1-8b-instant}"
+      DATABASE_PATH: /app/chinook.db
+    volumes:
+      - ./results:/app/results
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 128

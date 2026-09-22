@@ -6,3 +6,5 @@ __pycache__/
 *.db
 *.sqlite
 benchmark-results*.json
+results/
+benchmark-results*.json.tmp

@@ -1,0 +1,16 @@
+.git
+.github
+.agents
+.codex
+.env
+.env.*
+!.env.example
+.venv
+**/__pycache__
+.pytest_cache
+*.db
+*.sqlite
+benchmark-results*
+results
+docs
+*.log

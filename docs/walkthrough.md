@@ -1,76 +1,65 @@
-# Build your understanding from the execution boundary upward
+# Implementation and evaluation notes
 
-The project separates three kinds of decisions: the model proposes SQL, SQLite decides whether it can execute, and ordinary Python decides what node runs next. You should be able to replace Groq with a scripted responder without changing the graph. The tests demonstrate that separation.
+## Execution boundary
 
-## 1. Reproduce the database layer
+The model proposes SQL, SQLite evaluates it, and deterministic Python routing selects the next node. A model implementing `invoke(messages)` can replace Groq without changing graph construction. Tests use that interface to isolate application behavior from provider variation.
 
-Read `src/database.py`. `Path.resolve()` gives an absolute location; checking `is_file()` prevents SQLite from silently creating an empty database on a typo. `as_uri()` safely encodes spaces and other special path characters. `mode=ro` makes the database read-only. `closing()` matters: SQLite's connection context manager manages transactions but does not close the connection for you.
+`Database` resolves the database path and verifies its existence before connecting, preventing accidental creation of an empty SQLite database. A URI with `mode=ro` opens read-only access. Connections are explicitly closed: SQLite's connection context manager alone manages transactions, not connection lifetime.
 
-`schema()` reads DDL from `sqlite_master`; foreign-key declarations help the model choose joins. It does not scan the database's rows. `execute()` installs an authorizer after connection setup, permitting only operations needed for reading. This is why a valid SELECT CTE works while a CTE preceding DELETE fails. SQL fences are a presentation concern, not a security boundary.
+The schema inspector reads table DDL, including foreign keys. Generated queries pass through a SQLite authorizer that permits read operations. Single-statement execution, a cooperative progress deadline, a SQL-length limit, and bounded result fetching constrain execution. An overflow produces an error rather than a silently truncated reference comparison.
 
-`perf_counter()` is a monotonic clock suitable for elapsed durations. The progress callback returns nonzero after the deadline, which interrupts SQLite work. `fetchmany(max_rows + 1)` detects overflow rather than mistaking a truncated result for the complete answer. A list of columns and positional rows preserves duplicate column names in joins; converting rows directly into dictionaries could overwrite those names.
+Results retain column names and positional rows. This supports joins with duplicate column names without overwriting values in a dictionary.
 
-Exercise: write a SELECT and a DELETE against the test fixture. Predict which authorizer operations each requires. Explain why denying only strings beginning with DELETE would be insufficient.
+## State contract
 
-## 2. Understand the state contract
+`AgentState` defines the question, schema, current SQL, execution result, error, failure count, and final answer. Additional fields record attempts, correction duration, and provider errors. `TypedDict` supplies static typing, not runtime validation; `initial_state()` initializes fields and rejects empty questions.
 
-Read `src/agent/state.py`. `TypedDict` describes dictionary keys to type checkers; it does not validate arbitrary runtime input. `initial_state()` creates every required field and rejects empty questions. `None` for the result means no successful execution; an empty `rows` list is a valid successful query.
+Nodes return partial state updates. Each supplied key replaces its previous value. Attempt history is replaced with a new list, so no append reducer is needed. A missing result means no successful execution; an empty row list can be a successful query.
 
-The seven requested fields contain the functional workflow. `attempts`, `correction_seconds`, and `llm_error` provide evidence for evaluation and distinguish provider outages from SQL errors. Attempt history is not a transcript and is not automatically sent to the model.
+## Bounded correction
 
-Nodes return partial dictionaries because LangGraph merges node updates into the current state. Without an explicit reducer, a returned key replaces its old value. `[*state['attempts'], attempt]` creates a new history list; appending directly would mutate the input snapshot and make reasoning harder. Adding an append reducer as well would double-count history.
+For a generated query referring to a nonexistent column, the sequence is:
 
-Exercise: explain why the schema need not be returned by every node and why `retry_count` must not increment during successful execution.
+| Step | State change |
+| --- | --- |
+| generate_sql | Stores proposed SQL |
+| execute_sql | Stores SQLite traceback and increments failure count |
+| self_correct | Supplies question, schema, failed SQL, and traceback to the model |
+| execute_sql | Stores corrected result and clears error on success |
+| format_response | Generates an explanation grounded in the result preview |
 
-## 3. Trace one complete repair
+Routing uses only state, without mutation or model calls. Three failed executions terminate the run: one initial execution and at most two corrections. The graph recursion limit is a separate backstop.
 
-Suppose generation returns `SELECT FullName FROM Customer`. Chinook has `FirstName` and `LastName`, so execution fails.
+The original question remains in correction prompts to preserve intent. SQLite feedback identifies execution problems, but provides no signal when executable SQL answers the wrong question. There is no semantic-verification or clarification stage in this version.
 
-| Step | Key state changes | Next node |
-| --- | --- | --- |
-| generate_sql | generated_sql contains the invalid SELECT | execute_sql |
-| execute_sql | error_message contains a traceback; retry_count becomes 1; attempts has one entry | self_correct |
-| self_correct | generated_sql becomes a corrected SELECT; correction duration is recorded | execute_sql |
-| execute_sql | result contains rows; error_message becomes None; retry_count remains 1 | format_response |
-| format_response | final_answer is populated | END |
+LangGraph can stream a `None` update for a node that writes no state. The CLI skips that update and continues consuming events, allowing the terminal failure node to run.
 
-`traceback.format_exc()` is called inside `except sqlite3.Error`, where the active traceback exists. The repair prompt contains the original question, schema, failed SQL, and raw error. Without the original question, a repair could satisfy SQLite while abandoning the task. Without schema, the model might guess another nonexistent column.
+## Provider failures
 
-The router is pure: it reads state and returns a node name. A conditional edge maps that name to a destination. The fixed edge from self_correct to execute_sql creates the cycle. Compilation checks the graph structure and produces a runnable object; it does not precompute model outputs or make them deterministic.
+Provider exceptions are handled separately from SQL errors and recorded by exception type. Generation and correction failures terminate gracefully. Formatting failure preserves the successful SQL result and returns a result preview. Transport retries within a model call are distinct from SQL correction attempts.
 
-Exercise: trace three consecutive errors. There are three executions and two correction calls. Explain why a fourth execution is unreachable with the current router. Then run `test_streamed_cycle_clears_error` and compare the actual node order with your prediction.
+Generation and repair prompts receive schema and question data, never reference SQL or benchmark labels. Response formatting receives a bounded result preview. Formatting quality is not inferred from execution accuracy.
 
-## 4. Separate provider failure from SQL failure
+## Result comparison
 
-The model dependency follows a small Protocol with `invoke(messages)`. Groq and the scripted test model both meet that interface. `create_llm()` is called only by live entry points, so tests need no API key. Model exceptions are caught at that boundary and represented by their type, avoiding propagation of provider error text into user output. Programming mistakes outside model calls still surface normally.
+Execution scoring compares reference and generated result values, not SQL strings. Equivalent queries may differ syntactically. Column aliases are ignored, while positional values and column counts must match.
 
-Initial-generation and repair provider failures terminate gracefully. A formatting outage preserves the successful SQL result and gives a factual result preview. Groq's SDK can retry transport requests, but those retries are separate from the graph's SQL corrections. This distinction affects latency and API usage.
+Ordered tasks retain row order. Unordered tasks preserve duplicate multiplicities using iterative matching, including reassignment when numeric tolerance permits several candidate pairs. Numeric tolerances accommodate small floating-point differences; NULL, text, and zero remain distinct.
 
-Exercise: inject `RuntimeError` on the second model call. Predict whether that call was repair or formatting from the first SQL result, and explain why the two terminal behaviors differ.
+Reference SQL is itself fallible. The small relational fixture has independently calculated expected answers; real Chinook integration checks verify that the queries execute on the released schema. These checks do not prove equivalence over every possible database instance.
 
-## 5. Measure correctness independently
+## Metric interpretation
 
-Read `src/evaluation.py` after the routing tests. SQL-string equality is too strict: aliases and equivalent join structures can differ while producing the same result. Execution success is too weak: `SELECT 42` executes perfectly but answers almost none of the dataset questions.
+First-try and final accuracy use all SQL questions as their denominator. Correction success uses initially SQL-failing questions only. Execution recovery is weaker than correctness: a revised query may execute while returning the wrong answer.
 
-The comparator checks column count and positional values. Ordered tasks retain rank order. Unordered tasks use matching over rows so duplicates are preserved. Numeric tolerances absorb small floating-point differences; NULL, zero, and text remain distinct. For unordered rows, the matching algorithm can reassign an earlier pairing when several numeric values fall inside tolerance. This avoids a greedy false negative, at the cost of more work than hashing exact rows.
+For illustration only, suppose 12 questions produce seven correct first answers, three SQL failures, and two executable but incorrect answers. If two of the three SQL failures become correct, first-try accuracy is 7/12, correction success is 2/3, and final accuracy is 9/12. These hypothetical values are not experimental results.
 
-Reference SQL is also code and can contain mistakes. The tiny fixture has independently calculated expected answers to anchor the 12 golden queries. The real Chinook integration test checks that each runs on the actual schema. This still does not prove equivalence on every possible database: add adversarial fixtures with ties, duplicate names, missing children, and NULLs as the suite grows.
+Behavioral cases require separate manual judgments. Clarification, missing-data explanations, and helpful refusal cannot be established by SQL execution success. Reports retain review evidence and keep those denominators separate.
 
-Example: among 12 questions, 7 are correct immediately, 3 initially fail SQL, 2 of those become correct, and 2 execute incorrectly on the first try. First-try accuracy is 7/12, correction success is 2/3, and final accuracy is 9/12. If the remaining initially failing query becomes executable but wrong, execution recovery is 3/3 while correction success stays 2/3.
+## Reproducibility and limits
 
-Exercise: add a query that executes but double-counts invoice totals after a join. Verify the evaluator fails it and explain why the runtime agent cannot repair it using SQLite errors alone.
+The robustness runner records model/package versions, dataset/database hashes, source hashes, and selected case IDs. Each question starts with fresh state. Saved reports permit analysis without additional model calls.
 
-## 6. Rebuild and defend the design
+Temperature zero does not guarantee reproducible provider responses. Report repeated runs and family-level comparisons; matched paraphrases are correlated. Keep development changes separate from future held-out intent families.
 
-Reimplement the modules in this order without copying: database, state, router, nodes, graph, evaluation, CLI. Keep each existing test as a behavioral specification. Before reading a failed assertion, predict whether the defect concerns state, routing, SQL semantics, or result comparison.
-
-Be ready to explain these tradeoffs in your own words:
-
-- Why use a graph when a while loop could implement the same behavior? The graph exposes transitions, streaming, and future extension points, at the cost of a dependency and state contract.
-- What makes the workflow agentic? A model proposes an action, receives execution feedback, and revises it within a bounded control loop; Python owns the routing.
-- Why stop after two corrections? It bounds model cost and repeated failures; the threshold should ultimately be informed by measured recovery and latency.
-- What remains unmeasured? Natural-language faithfulness, generalization outside 12 questions, authorization, and robustness under concurrent production load.
-- How would semantic correction work? Add an independently evaluated validation signal, such as invariant checks or a separate verifier, and measure false approvals and added latency before expanding the cycle. Never use test-set gold SQL as a runtime hint.
-- Why is temperature zero insufficient for reproducibility? Provider execution and serving behavior can vary; record versions and run repeated live benchmarks. Scripted offline tests isolate deterministic application behavior.
-
-The next useful milestone is to run the live benchmark, inspect every incorrect result, and classify each failure as schema selection, join logic, aggregation, ordering, or provider failure. Use a separate development set for prompt changes and preserve a held-out set for honest reporting.
+The container constrains resources and filesystem access, but the application is a local experimental CLI without per-user data authorization, durable conversation state, or a public service interface. Remaining research dimensions include semantic error detection, clarification completion, unseen schemas, and natural-language faithfulness.

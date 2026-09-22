@@ -83,7 +83,7 @@ For write requests, assess two things separately: **containment** (was modificat
 
 Publish manual pass/partial/fail/provider-error counts by category. If reporting a strict pass rate, define it as passes / all selected cases in that category, retaining provider errors in the denominator and showing them separately. Do not collapse SQL and behavior results into one accuracy number. Manual review fields are placeholders; the runner does not automatically judge prose or recalculate summaries after you edit the report.
 
-## A fair portfolio experiment
+## Reproducible experimental protocol
 
 1. Freeze this bank and the current prompt/graph before your first run. The report records dataset, database, and source hashes plus package/model versions.
 2. Run the same selection several times with separate filenames. Show variability; temperature zero does not guarantee identical API responses. Keep provider errors visible.
@@ -101,4 +101,10 @@ Suggested results table:
 | ambiguous_metric | 3 | N/A | N/A | reviewed counts | Clarification behavior |
 | other behavioral categories | 3 each | N/A | N/A | reviewed counts per category | Keep categories separate |
 
-This bank is a starting point. Missing future dimensions include multi-turn clarification completion, multilingual questions, large-schema retrieval, unseen schemas, and genuinely hard new SQL families such as window functions. Add them as separate controlled slices with explicit grading contracts, rather than claiming this bank covers them.
+This bank is a starting point. Missing future dimensions include multi-turn clarification completion, multilingual questions, large-schema retrieval, unseen schemas, and new SQL families such as window functions. Add them as separate controlled slices with explicit grading contracts, rather than claiming this bank covers them.
+
+## Docker execution and saved-report analysis
+
+The root [README](../README.md) provides Docker build, interactive query, and benchmark commands. Results written under `/app/results/` persist in the host `results/` directory.
+
+After filling manual review fields, run `python -m scripts.report_results results/all-run1.json --output results/all-run1.md` locally, or `docker compose run --rm app -m scripts.report_results /app/results/all-run1.json --output /app/results/all-run1.md` in Docker. This recomputes SQL metrics and manual review counts into a Markdown report without API calls. The source JSON remains unchanged.

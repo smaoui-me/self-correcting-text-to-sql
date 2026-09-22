@@ -1,0 +1,15 @@
+name: Tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build container and verify dataset checksum
+        run: docker build -t text-to-sql:test .
+      - name: Run offline tests on a read-only filesystem
+        run: docker run --rm --read-only --tmpfs /tmp text-to-sql:test -m pytest -q -p no:cacheprovider
+      - name: List benchmark cases without an API key
+        run: docker run --rm --network none text-to-sql:test -m scripts.benchmark_robustness --mode all --list
