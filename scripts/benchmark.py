@@ -11,6 +11,7 @@ from src.agent.graph import build_graph
 from src.config import ROOT, Settings, configure_console, create_llm
 from src.database import Database
 from src.evaluation import evaluate_case, summarize
+from src.telemetry import summarize_calls
 
 
 def main() -> None:
@@ -36,7 +37,8 @@ def main() -> None:
         records.append(record)
         print(f"{case['id']}: first={record['first_try_correct']} final={record['final_correct']} failures={record['retry_count']}")
         # Save after each question so an interrupted run still has usable records.
-        report = {"metadata": metadata, "summary": summarize(records), "cases": records}
+        report = {"metadata": {**metadata, "telemetry_version": 1}, "summary": summarize(records),
+                  "model_telemetry": summarize_calls(records), "cases": records}
         args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(report["summary"], indent=2))
     print(f"Report: {args.output.resolve()}")

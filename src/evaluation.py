@@ -73,7 +73,7 @@ def score_case(case: dict, state: dict, expected: QueryResult) -> dict:
             "self_corrected": initial_failed and final_correct,
             "retry_count": state["retry_count"], "llm_error": state["llm_error"],
             "retry_latencies_seconds": [a["correction_seconds"] + a["execution_seconds"] for a in attempts[1:]],
-            "attempts": attempts}
+            "attempts": attempts, "model_calls": state.get("model_calls")}
 
 
 def summarize(records: list[dict]) -> dict:

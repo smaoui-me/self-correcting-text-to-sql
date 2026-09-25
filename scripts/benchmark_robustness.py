@@ -13,6 +13,7 @@ from src.agent.state import initial_state
 from src.config import ROOT, Settings, configure_console, create_llm
 from src.database import Database
 from src.evaluation import score_case, summarize
+from src.telemetry import summarize_calls, has_provider_error
 
 BANK_PATH = ROOT / "benchmarks/question_bank.json"
 
@@ -37,7 +38,8 @@ def run_case(case, database, graph, schema):
         "expected_behavior", "scoring", "review_criteria", "notes")}
     record.update({"elapsed_seconds": elapsed, "generated_sql": state["generated_sql"],
                    "final_answer": state["final_answer"], "execution_result": state["execution_result"],
-                   "llm_error": state["llm_error"], "attempts": state["attempts"]})
+                   "llm_error": state["llm_error"], "attempts": state["attempts"],
+                   "model_calls": state["model_calls"]})
     if expected is not None:
         record.update(score_case(case, state, expected))
         record["expected_result"] = expected
@@ -60,7 +62,8 @@ def summarize_bank(records):
                           for family in sorted({r["family_id"] for r in sql})},
         "behavior_cases": len(behavior),
         "behavior_pending_review": sum(r["review"]["verdict"] is None for r in behavior),
-        "provider_error_cases": sum(r["llm_error"] is not None for r in records),
+        "provider_error_cases": sum(has_provider_error(r) for r in records),
+        "model_telemetry": summarize_calls(records),
     }
 
 
@@ -92,6 +95,7 @@ def main():
     graph = build_graph(database, create_llm(settings))
     schema = database.schema()
     metadata = {
+        "telemetry_version": 1,
         "utc": datetime.now(timezone.utc).isoformat(), "model": settings.model,
         "temperature": 0, "python": platform.python_version(),
         "bank_version": bank["version"],

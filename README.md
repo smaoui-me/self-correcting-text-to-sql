@@ -162,6 +162,14 @@ On Linux/macOS use `.venv/bin/python`. Configure `.env` as above. Entry points u
 
 Docker commands follow the [Compose one-off command documentation](https://docs.docker.com/reference/cli/docker/compose/run/). Primary implementation references: [LangGraph](https://docs.langchain.com/oss/python/langgraph/graph-api), [ChatGroq](https://docs.langchain.com/oss/python/integrations/chat/groq), and [sqlite3](https://docs.python.org/3/library/sqlite3.html).
 
+## Model-call telemetry
+
+Model-call telemetry is recorded in new benchmark reports under `cases[].model_calls`. Each logical invocation includes its stage (`generate_sql`, `self_correct`, or `format_response`), duration, outcome, error type/kind, reported token counts, and allowlisted rate-limit metadata when available. The Markdown report separates SQL correctness from formatting completion and counts provider failures across all stages.
+
+Older reports remain readable: missing stage telemetry is labeled **not recorded**, and legacy provider-error counts are a lower bound because formatting failures were not structured. Missing token usage is `null`, not zero. Timing includes SDK retry delays; individual HTTP retries are not observed. The current ChatGroq integration exposes usage on responses but does not normally expose success-response headers; error-response headers are captured when available. Only numeric Retry-After and validated rate-limit counters/durations are retained. Raw headers, exception bodies, and credentials are excluded from telemetry. See [Groq's header definitions](https://console.groq.com/docs/rate-limits).
+
+This instrumentation does not change retry or pacing behavior. Rebuild the Docker image before collecting a new instrumented run; existing baseline JSON files need no migration.
+
 ## Planned work
 
 - Complete repeated evaluations across the question bank and review behavioral outcomes.

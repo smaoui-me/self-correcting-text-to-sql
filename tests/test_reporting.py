@@ -39,3 +39,18 @@ def test_empty_report_does_not_invent_accuracy():
     text = render_report({"cases": []})
     assert "Final accuracy | N/A" in text
     assert "100.0%" not in text
+
+
+def test_authentication_failure_is_not_presented_as_sql_quality():
+    record = sql_record()
+    record.update(first_try_correct=False, final_correct=False,
+                  llm_error="AuthenticationError", attempts=[])
+    behavior = {"id": "ambiguous", "scoring": "manual_behavior",
+                "category": "ambiguous_metric", "llm_error": "AuthenticationError",
+                "attempts": [], "review": {"verdict": None}}
+    text = render_report({"cases": [record, behavior]})
+    assert "does not measure model SQL quality" in text
+    assert "AuthenticationError`: 2 cases" in text
+    assert "SQL cases reaching database execution: 0/1" in text
+    assert "ambiguous_metric | 0 | 0 | 0 | 1 | 0" in text
+    assert "Final accuracy | 0.0%" in text

@@ -1,6 +1,7 @@
 """State is the shared contract between nodes, not a conversation transcript."""
 from typing import TypedDict
 from src.database import QueryResult
+from src.telemetry import ModelCall
 
 
 class Attempt(TypedDict):
@@ -22,6 +23,7 @@ class AgentState(TypedDict):
     attempts: list[Attempt]  # New list returned each time; no in-place mutation.
     correction_seconds: float  # Duration of the repair producing the next SQL.
     llm_error: str | None  # Provider failure is distinct from invalid SQL.
+    model_calls: list[ModelCall]  # Includes formatter failures; one record per invoke.
 
 
 def initial_state(question: str, schema: str) -> AgentState:
@@ -30,4 +32,4 @@ def initial_state(question: str, schema: str) -> AgentState:
     return {"question": question.strip(), "schema": schema, "generated_sql": "",
             "execution_result": None, "error_message": None, "retry_count": 0,
             "final_answer": "", "attempts": [], "correction_seconds": 0.0,
-            "llm_error": None}
+            "llm_error": None, "model_calls": []}
